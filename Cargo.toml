@@ -8,7 +8,7 @@ repository = "https://github.com/kroqdotdev/wht"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
