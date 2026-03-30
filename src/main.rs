@@ -4,8 +4,9 @@ mod rate;
 mod sender;
 mod stats;
 mod templates;
+mod web;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use reqwest::{Client, Method};
 use sender::SendConfig;
 use std::sync::Arc;
@@ -18,8 +19,11 @@ use std::time::Duration;
     version
 )]
 struct Cli {
-    /// Target URL
-    url: String,
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Target URL (for direct send mode)
+    url: Option<String>,
 
     /// HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
     #[arg(short, long, default_value = "POST")]
@@ -70,15 +74,46 @@ struct Cli {
     content_type: String,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Launch the web GUI
+    Gui {
+        /// Port to listen on
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Handle subcommands
+    if let Some(Command::Gui { port }) = cli.command {
+        web::start_server(port).await;
+        return;
+    }
+
+    // Direct send mode — URL is required
+    let url = match cli.url {
+        Some(u) => u,
+        None => {
+            eprintln!("Error: URL is required. Use `wht <URL>` or `wht gui` for the web interface.");
+            std::process::exit(1);
+        }
+    };
 
     // Parse method
     let method: Method = cli.method.to_uppercase().parse().unwrap_or_else(|_| {
         eprintln!("Invalid HTTP method: {}", cli.method);
         std::process::exit(1);
     });
+
+    // Handle --template list
+    if cli.template.as_deref() == Some("list") {
+        templates::list_templates();
+        return;
+    }
 
     // Resolve body
     let body = payload::resolve_body(
@@ -128,7 +163,7 @@ async fn main() {
     }
 
     let cfg = SendConfig {
-        url: cli.url,
+        url,
         method,
         headers,
         body,
