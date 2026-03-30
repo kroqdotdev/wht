@@ -1,3 +1,4 @@
+mod events;
 mod payload;
 mod rate;
 mod sender;

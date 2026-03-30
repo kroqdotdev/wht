@@ -1,3 +1,4 @@
+use crate::events::StatsSummary;
 use colored::Colorize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -47,32 +48,18 @@ impl Stats {
         inner.success + inner.failed
     }
 
-    pub fn print_summary(&self) {
+    pub fn summary(&self) -> StatsSummary {
         let inner = self.inner.lock().unwrap();
         let elapsed = self.started.elapsed();
         let total = inner.success + inner.failed;
 
-        println!("\n{}", "--- Results ---".bold());
-        println!("Total:      {} requests", total);
-        println!(
-            "Success:    {}",
-            format!("{} (2xx)", inner.success).green()
-        );
-        if inner.failed > 0 {
-            println!("Failed:     {}", format!("{}", inner.failed).red());
+        let throughput = if total > 0 && elapsed.as_secs_f64() > 0.0 {
+            total as f64 / elapsed.as_secs_f64()
         } else {
-            println!("Failed:     {}", "0".green());
-        }
-        println!("Duration:   {:.1}s", elapsed.as_secs_f64());
+            0.0
+        };
 
-        if total > 0 && elapsed.as_secs_f64() > 0.0 {
-            println!(
-                "Throughput: {:.1} req/s",
-                total as f64 / elapsed.as_secs_f64()
-            );
-        }
-
-        if !inner.latencies.is_empty() {
+        let (avg_ms, min_ms, max_ms, p50_ms, p95_ms, p99_ms) = if !inner.latencies.is_empty() {
             let mut sorted: Vec<f64> = inner
                 .latencies
                 .iter()
@@ -80,22 +67,67 @@ impl Stats {
                 .collect();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-            let avg: f64 = sorted.iter().sum::<f64>() / sorted.len() as f64;
+            let avg = sorted.iter().sum::<f64>() / sorted.len() as f64;
             let min = sorted[0];
             let max = sorted[sorted.len() - 1];
-            let p50 = percentile(&sorted, 50.0);
-            let p95 = percentile(&sorted, 95.0);
-            let p99 = percentile(&sorted, 99.0);
+            (
+                avg,
+                min,
+                max,
+                percentile(&sorted, 50.0),
+                percentile(&sorted, 95.0),
+                percentile(&sorted, 99.0),
+            )
+        } else {
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        };
 
+        StatsSummary {
+            total,
+            success: inner.success,
+            failed: inner.failed,
+            duration_secs: elapsed.as_secs_f64(),
+            throughput,
+            avg_ms,
+            min_ms,
+            max_ms,
+            p50_ms,
+            p95_ms,
+            p99_ms,
+            errors: inner.errors.clone(),
+        }
+    }
+
+    pub fn print_summary(&self) {
+        let s = self.summary();
+
+        println!("\n{}", "--- Results ---".bold());
+        println!("Total:      {} requests", s.total);
+        println!(
+            "Success:    {}",
+            format!("{} (2xx)", s.success).green()
+        );
+        if s.failed > 0 {
+            println!("Failed:     {}", format!("{}", s.failed).red());
+        } else {
+            println!("Failed:     {}", "0".green());
+        }
+        println!("Duration:   {:.1}s", s.duration_secs);
+
+        if s.total > 0 {
+            println!("Throughput: {:.1} req/s", s.throughput);
+        }
+
+        if s.total > 0 {
             println!(
                 "Latency:    avg={:.0}ms  min={:.0}ms  max={:.0}ms  p50={:.0}ms  p95={:.0}ms  p99={:.0}ms",
-                avg, min, max, p50, p95, p99
+                s.avg_ms, s.min_ms, s.max_ms, s.p50_ms, s.p95_ms, s.p99_ms
             );
         }
 
-        if !inner.errors.is_empty() {
+        if !s.errors.is_empty() {
             println!("\n{}", "Sample errors:".red());
-            for (i, e) in inner.errors.iter().enumerate() {
+            for (i, e) in s.errors.iter().enumerate() {
                 println!("  {}. {}", i + 1, e);
             }
         }

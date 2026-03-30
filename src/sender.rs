@@ -1,3 +1,4 @@
+use crate::events::SendEvent;
 use crate::rate::{self, Limiter};
 use crate::stats::Stats;
 use colored::Colorize;
@@ -6,6 +7,8 @@ use reqwest::{Client, Method};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 pub struct SendConfig {
     pub url: String,
@@ -16,7 +19,10 @@ pub struct SendConfig {
 }
 
 /// Send a single request, returning (status_code, latency) or error.
-async fn fire(client: &Client, cfg: &SendConfig) -> Result<(u16, Duration), (Duration, String)> {
+pub(crate) async fn fire(
+    client: &Client,
+    cfg: &SendConfig,
+) -> Result<(u16, Duration), (Duration, String)> {
     let start = Instant::now();
 
     let mut req = client.request(cfg.method.clone(), &cfg.url);
@@ -43,22 +49,188 @@ async fn fire(client: &Client, cfg: &SendConfig) -> Result<(u16, Duration), (Dur
     }
 }
 
-fn record_result(stats: &Stats, result: Result<(u16, Duration), (Duration, String)>) {
+pub(crate) fn record_result(stats: &Stats, result: &Result<(u16, Duration), (Duration, String)>) {
     match result {
         Ok((status, latency)) => {
-            if (200..300).contains(&status) {
-                stats.record_success(latency);
+            if (200..300).contains(status) {
+                stats.record_success(*latency);
             } else {
-                stats.record_failure(latency, format!("HTTP {status}"));
+                stats.record_failure(*latency, format!("HTTP {status}"));
             }
         }
         Err((latency, err)) => {
-            stats.record_failure(latency, err);
+            stats.record_failure(*latency, err.clone());
         }
     }
 }
 
-/// Send a single request (default mode).
+fn emit_result(tx: &broadcast::Sender<SendEvent>, result: &Result<(u16, Duration), (Duration, String)>) {
+    match result {
+        Ok((status, latency)) => {
+            let _ = tx.send(SendEvent::RequestDone {
+                status: *status,
+                latency_ms: latency.as_secs_f64() * 1000.0,
+                success: (200..300).contains(status),
+            });
+        }
+        Err((latency, err)) => {
+            let _ = tx.send(SendEvent::RequestFailed {
+                error: err.clone(),
+                latency_ms: latency.as_secs_f64() * 1000.0,
+            });
+        }
+    }
+}
+
+// ── Core variants (used by web) ─────────────────────────────────────
+
+/// Fire a single request and return the result directly.
+pub(crate) async fn send_single_core(
+    client: &Client,
+    cfg: &SendConfig,
+) -> Result<(u16, Duration), (Duration, String)> {
+    fire(client, cfg).await
+}
+
+/// Send N requests, emitting events. Supports cancellation.
+pub(crate) async fn send_count_core(
+    client: &Client,
+    cfg: Arc<SendConfig>,
+    count: u64,
+    concurrency: usize,
+    limiter: Option<Limiter>,
+    event_tx: broadcast::Sender<SendEvent>,
+    cancel: CancellationToken,
+) {
+    let stats = Arc::new(Stats::new());
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut handles = Vec::new();
+    let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    for _ in 0..count {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        rate::wait(&limiter).await;
+
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let cfg = cfg.clone();
+        let stats = stats.clone();
+        let event_tx = event_tx.clone();
+        let completed = completed.clone();
+
+        let handle = tokio::spawn(async move {
+            let result = fire(&client, &cfg).await;
+            record_result(&stats, &result);
+            emit_result(&event_tx, &result);
+            let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let _ = event_tx.send(SendEvent::Progress {
+                completed: done,
+                total: Some(count),
+            });
+            drop(permit);
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let _ = event_tx.send(SendEvent::Finished {
+        summary: stats.summary(),
+    });
+}
+
+/// Send requests for a duration, emitting events. Supports cancellation.
+pub(crate) async fn send_timed_core(
+    client: &Client,
+    cfg: Arc<SendConfig>,
+    duration_secs: f64,
+    concurrency: usize,
+    limiter: Option<Limiter>,
+    event_tx: broadcast::Sender<SendEvent>,
+    cancel: CancellationToken,
+) {
+    let stats = Arc::new(Stats::new());
+    let deadline = Instant::now() + Duration::from_secs_f64(duration_secs);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut handles = Vec::new();
+
+    while Instant::now() < deadline && !cancel.is_cancelled() {
+        rate::wait(&limiter).await;
+
+        if Instant::now() >= deadline || cancel.is_cancelled() {
+            break;
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let cfg = cfg.clone();
+        let stats = stats.clone();
+        let event_tx = event_tx.clone();
+        let completed = completed.clone();
+
+        let handle = tokio::spawn(async move {
+            let result = fire(&client, &cfg).await;
+            record_result(&stats, &result);
+            emit_result(&event_tx, &result);
+            let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let _ = event_tx.send(SendEvent::Progress {
+                completed: done,
+                total: None,
+            });
+            drop(permit);
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let _ = event_tx.send(SendEvent::Finished {
+        summary: stats.summary(),
+    });
+}
+
+// ── CLI helpers ─────────────────────────────────────────────────────
+
+fn print_stats_summary(s: &crate::events::StatsSummary) {
+    println!("\n{}", "--- Results ---".bold());
+    println!("Total:      {} requests", s.total);
+    println!("Success:    {}", format!("{} (2xx)", s.success).green());
+    if s.failed > 0 {
+        println!("Failed:     {}", format!("{}", s.failed).red());
+    } else {
+        println!("Failed:     {}", "0".green());
+    }
+    println!("Duration:   {:.1}s", s.duration_secs);
+    if s.total > 0 {
+        println!("Throughput: {:.1} req/s", s.throughput);
+        println!(
+            "Latency:    avg={:.0}ms  min={:.0}ms  max={:.0}ms  p50={:.0}ms  p95={:.0}ms  p99={:.0}ms",
+            s.avg_ms, s.min_ms, s.max_ms, s.p50_ms, s.p95_ms, s.p99_ms
+        );
+    }
+    if !s.errors.is_empty() {
+        println!("\n{}", "Sample errors:".red());
+        for (i, e) in s.errors.iter().enumerate() {
+            println!("  {}. {}", i + 1, e);
+        }
+    }
+}
+
+// ── CLI wrappers (terminal output) ──────────────────────────────────
+
+/// Send a single request (default mode) — prints to terminal.
 pub async fn send_single(client: &Client, cfg: &SendConfig) {
     println!(
         "{} {} {}",
@@ -67,8 +239,7 @@ pub async fn send_single(client: &Client, cfg: &SendConfig) {
         cfg.url
     );
 
-    let start = Instant::now();
-    match fire(client, cfg).await {
+    match send_single_core(client, cfg).await {
         Ok((status, latency)) => {
             let status_str = format!("{status}");
             let colored_status = if (200..300).contains(&status) {
@@ -85,19 +256,18 @@ pub async fn send_single(client: &Client, cfg: &SendConfig) {
                 latency.as_secs_f64() * 1000.0
             );
         }
-        Err((_latency, err)) => {
-            let elapsed = start.elapsed();
+        Err((latency, err)) => {
             println!(
                 "{} {} after {:.0}ms",
                 "✗".red().bold(),
                 err,
-                elapsed.as_secs_f64() * 1000.0
+                latency.as_secs_f64() * 1000.0
             );
         }
     }
 }
 
-/// Send N requests with optional rate limiting and concurrency.
+/// Send N requests with optional rate limiting and concurrency — terminal progress bar.
 pub async fn send_count(
     client: &Client,
     cfg: Arc<SendConfig>,
@@ -105,8 +275,6 @@ pub async fn send_count(
     concurrency: usize,
     limiter: Option<Limiter>,
 ) {
-    let stats = Arc::new(Stats::new());
-
     let rps_str = if limiter.is_some() {
         " (rate limited)".to_string()
     } else {
@@ -130,36 +298,38 @@ pub async fn send_count(
             .progress_chars("█▉▊▋▌▍▎▏  "),
     );
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let mut handles = Vec::new();
+    let (tx, mut rx) = broadcast::channel::<SendEvent>(1024);
+    let cancel = CancellationToken::new();
 
-    for _ in 0..count {
-        rate::wait(&limiter).await;
+    let pb_clone = pb.clone();
+    let progress_handle = tokio::spawn(async move {
+        let mut summary = None;
+        while let Ok(event) = rx.recv().await {
+            match event {
+                SendEvent::Progress { completed, .. } => {
+                    pb_clone.set_position(completed);
+                }
+                SendEvent::Finished { summary: s } => {
+                    summary = Some(s);
+                }
+                _ => {}
+            }
+        }
+        summary
+    });
 
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let client = client.clone();
-        let cfg = cfg.clone();
-        let stats = stats.clone();
-        let pb = pb.clone();
+    send_count_core(client, cfg, count, concurrency, limiter, tx.clone(), cancel).await;
+    drop(tx);
 
-        let handle = tokio::spawn(async move {
-            let result = fire(&client, &cfg).await;
-            record_result(&stats, result);
-            pb.inc(1);
-            drop(permit);
-        });
-        handles.push(handle);
+    if let Ok(Some(summary)) = progress_handle.await {
+        pb.finish_and_clear();
+        print_stats_summary(&summary);
+    } else {
+        pb.finish_and_clear();
     }
-
-    for h in handles {
-        let _ = h.await;
-    }
-
-    pb.finish_and_clear();
-    stats.print_summary();
 }
 
-/// Send requests for a duration with optional rate limiting and concurrency.
+/// Send requests for a duration — terminal progress bar.
 pub async fn send_timed(
     client: &Client,
     cfg: Arc<SendConfig>,
@@ -167,9 +337,6 @@ pub async fn send_timed(
     concurrency: usize,
     limiter: Option<Limiter>,
 ) {
-    let stats = Arc::new(Stats::new());
-    let deadline = Instant::now() + Duration::from_secs_f64(duration_secs);
-
     println!(
         "Sending to {} [{}] for {:.0}s (concurrency: {})",
         cfg.url.cyan(),
@@ -186,43 +353,39 @@ pub async fn send_timed(
             .progress_chars("█▉▊▋▌▍▎▏  "),
     );
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let (tx, mut rx) = broadcast::channel::<SendEvent>(1024);
+    let cancel = CancellationToken::new();
+
+    let pb_clone = pb.clone();
     let start = Instant::now();
-    let mut handles = Vec::new();
-
-    while Instant::now() < deadline {
-        rate::wait(&limiter).await;
-
-        if Instant::now() >= deadline {
-            break;
+    let dur = duration_secs;
+    let progress_handle = tokio::spawn(async move {
+        let mut summary = None;
+        while let Ok(event) = rx.recv().await {
+            match event {
+                SendEvent::Progress { completed, .. } => {
+                    let elapsed = start.elapsed().as_secs();
+                    pb_clone.set_position(elapsed.min(dur as u64));
+                    pb_clone.set_message(format!("{completed} sent"));
+                }
+                SendEvent::Finished { summary: s } => {
+                    summary = Some(s);
+                }
+                _ => {}
+            }
         }
+        summary
+    });
 
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let client = client.clone();
-        let cfg = cfg.clone();
-        let stats = stats.clone();
-        let pb_inner = pb.clone();
+    send_timed_core(client, cfg, duration_secs, concurrency, limiter, tx.clone(), cancel).await;
+    drop(tx);
 
-        let handle = tokio::spawn(async move {
-            let result = fire(&client, &cfg).await;
-            record_result(&stats, result);
-            pb_inner.set_message(format!("{} sent", stats.total()));
-            drop(permit);
-        });
-        handles.push(handle);
-
-        // Update time progress
-        let elapsed = start.elapsed().as_secs();
-        pb.set_position(elapsed.min(duration_secs as u64));
+    if let Ok(Some(summary)) = progress_handle.await {
+        pb.finish_and_clear();
+        print_stats_summary(&summary);
+    } else {
+        pb.finish_and_clear();
     }
-
-    // Wait for in-flight requests
-    for h in handles {
-        let _ = h.await;
-    }
-
-    pb.finish_and_clear();
-    stats.print_summary();
 }
 
 /// Interactive mode: press Enter to send one request at a time.
@@ -252,7 +415,7 @@ pub async fn send_interactive(client: &Client, cfg: &SendConfig) {
                 send_single(client, cfg).await;
                 count += 1;
             }
-            Ok(None) => break, // EOF
+            Ok(None) => break,
             Err(_) => break,
         }
     }

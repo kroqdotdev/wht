@@ -1,5 +1,18 @@
 use chrono::Utc;
 
+pub const TEMPLATE_NAMES: &[&str] = &[
+    "github-push",
+    "stripe-payment",
+    "slack-msg",
+    "json-simple",
+    "form-data",
+];
+
+/// Return the template names as a vec (for API use).
+pub fn template_names() -> Vec<&'static str> {
+    TEMPLATE_NAMES.to_vec()
+}
+
 /// Return the body string for a named built-in template.
 pub fn get_template(name: &str) -> Result<String, String> {
     let now = Utc::now().to_rfc3339();
@@ -10,12 +23,9 @@ pub fn get_template(name: &str) -> Result<String, String> {
         "slack-msg" => Ok(slack_message()),
         "json-simple" => Ok(json_simple(&now)),
         "form-data" => Ok(form_data()),
-        "list" => {
-            list_templates();
-            std::process::exit(0);
-        }
         _ => Err(format!(
-            "Unknown template: {name}\nAvailable: github-push, stripe-payment, slack-msg, json-simple, form-data\nUse --template list to see details"
+            "Unknown template: {name}\nAvailable: {}\nUse --template list to see details",
+            TEMPLATE_NAMES.join(", ")
         )),
     }
 }
