@@ -1,2 +1,454 @@
 <!DOCTYPE html>
-<html><body><h1>placeholder</h1></body></html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wht — Webhook Tester</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --fg: #e6edf3; --fg2: #8b949e; --fg3: #484f58;
+    --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --border: #30363d; --radius: 8px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff; --bg2: #f6f8fa; --bg3: #e1e4e8;
+      --fg: #1f2328; --fg2: #656d76; --fg3: #b1bac4;
+      --accent: #0969da; --green: #1a7f37; --red: #cf222e; --yellow: #9a6700;
+      --border: #d0d7de;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--fg);
+    line-height: 1.5; padding: 0;
+  }
+  .container { max-width: 800px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+  h1 span { color: var(--fg2); font-weight: 400; font-size: 14px; }
+
+  .card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+  }
+  .card-title { font-size: 13px; font-weight: 600; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+
+  label { display: block; font-size: 13px; font-weight: 500; color: var(--fg2); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; padding: 8px 12px; font-size: 14px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--fg); outline: none; font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,166,255,0.2); }
+  textarea { resize: vertical; min-height: 100px; font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace; font-size: 13px; }
+  select { cursor: pointer; }
+
+  .row { display: flex; gap: 12px; margin-bottom: 12px; }
+  .row > * { flex: 1; }
+  .row-3 > *:first-child { flex: 3; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tab {
+    padding: 6px 14px; font-size: 13px; border-radius: 6px; cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border); color: var(--fg2);
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--fg); border-color: var(--fg3); }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .btn {
+    padding: 10px 24px; font-size: 14px; font-weight: 600; border-radius: 6px;
+    cursor: pointer; border: none; transition: all 0.15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-danger:hover { filter: brightness(1.1); }
+  .btn-danger:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .actions { display: flex; gap: 12px; margin-bottom: 16px; }
+
+  .mode-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+
+  .progress-wrap {
+    background: var(--bg3); border-radius: 6px; height: 8px; overflow: hidden; margin: 12px 0;
+  }
+  .progress-bar {
+    height: 100%; background: var(--accent); border-radius: 6px;
+    transition: width 0.2s ease;
+  }
+  .progress-text { font-size: 13px; color: var(--fg2); margin-bottom: 4px; }
+
+  .results { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 13px; }
+  .results table { width: 100%; border-collapse: collapse; }
+  .results td { padding: 4px 0; }
+  .results td:first-child { color: var(--fg2); width: 120px; }
+  .results .val-success { color: var(--green); }
+  .results .val-fail { color: var(--red); }
+
+  .header-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: end; }
+  .header-row input { flex: 1; }
+  .header-row .btn-sm {
+    padding: 8px 12px; font-size: 13px; border-radius: 6px; cursor: pointer;
+    background: var(--bg3); border: 1px solid var(--border); color: var(--fg2);
+  }
+  .header-row .btn-sm:hover { color: var(--fg); }
+
+  .hidden { display: none !important; }
+
+  .errors { margin-top: 8px; }
+  .errors summary { cursor: pointer; color: var(--red); font-size: 13px; }
+  .errors pre { font-size: 12px; color: var(--fg2); margin-top: 4px; white-space: pre-wrap; }
+
+  .live-log { max-height: 150px; overflow-y: auto; font-size: 12px; color: var(--fg2); margin-top: 8px; padding: 8px; background: var(--bg); border-radius: 6px; border: 1px solid var(--border); }
+  .live-log .ok { color: var(--green); }
+  .live-log .fail { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>wht <span>Webhook Tester</span></h1>
+
+  <!-- Request Config -->
+  <div class="card">
+    <div class="card-title">Request</div>
+    <div class="row row-3">
+      <div><label for="url">URL</label><input type="url" id="url" placeholder="https://example.com/webhook"></div>
+      <div><label for="method">Method</label>
+        <select id="method">
+          <option>POST</option><option>GET</option><option>PUT</option>
+          <option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div><label for="content-type">Content-Type</label>
+        <select id="content-type">
+          <option value="application/json">application/json</option>
+          <option value="application/x-www-form-urlencoded">application/x-www-form-urlencoded</option>
+          <option value="text/plain">text/plain</option>
+          <option value="application/xml">application/xml</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Headers -->
+    <label>Headers</label>
+    <div id="headers-list"></div>
+    <button class="btn-sm" onclick="addHeader()" style="margin-top:4px;padding:4px 10px;font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--fg2);cursor:pointer;">+ Add Header</button>
+  </div>
+
+  <!-- Payload -->
+  <div class="card">
+    <div class="card-title">Payload</div>
+    <div class="tabs">
+      <div class="tab active" onclick="setPayloadTab('manual', this)">Manual</div>
+      <div class="tab" onclick="setPayloadTab('template', this)">Template</div>
+      <div class="tab" onclick="setPayloadTab('sized', this)">Sized</div>
+    </div>
+    <div id="payload-manual">
+      <textarea id="body" placeholder='{"key": "value"}'></textarea>
+    </div>
+    <div id="payload-template" class="hidden">
+      <select id="template" onchange="loadTemplate()">
+        <option value="">— Select template —</option>
+      </select>
+      <textarea id="template-preview" readonly style="margin-top:8px;opacity:0.7;"></textarea>
+    </div>
+    <div id="payload-sized" class="hidden">
+      <label for="size">Payload size</label>
+      <input type="text" id="size" placeholder="e.g. 1kb, 5mb, 25mb">
+    </div>
+  </div>
+
+  <!-- Send Mode -->
+  <div class="card">
+    <div class="card-title">Send Mode</div>
+    <div class="tabs mode-tabs">
+      <div class="tab active" onclick="setMode('single', this)">Single</div>
+      <div class="tab" onclick="setMode('count', this)">Count</div>
+      <div class="tab" onclick="setMode('timed', this)">Timed</div>
+    </div>
+    <div id="mode-count" class="hidden">
+      <div class="row">
+        <div><label for="count">Requests</label><input type="number" id="count" value="100" min="1"></div>
+        <div><label for="concurrency-count">Concurrency</label><input type="number" id="concurrency-count" value="1" min="1"></div>
+        <div><label for="rps-count">RPS (0=unlimited)</label><input type="number" id="rps-count" value="0" min="0" step="0.1"></div>
+      </div>
+    </div>
+    <div id="mode-timed" class="hidden">
+      <div class="row">
+        <div><label for="duration">Duration (seconds)</label><input type="number" id="duration" value="10" min="1"></div>
+        <div><label for="concurrency-timed">Concurrency</label><input type="number" id="concurrency-timed" value="1" min="1"></div>
+        <div><label for="rps-timed">RPS (0=unlimited)</label><input type="number" id="rps-timed" value="0" min="0" step="0.1"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-send" onclick="startSend()">Send</button>
+    <button class="btn btn-danger" id="btn-cancel" onclick="cancelJob()" disabled>Cancel</button>
+  </div>
+
+  <!-- Results -->
+  <div class="card hidden" id="results-card">
+    <div class="card-title">Results</div>
+    <div class="progress-text" id="progress-text"></div>
+    <div class="progress-wrap" id="progress-wrap" class="hidden">
+      <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+    </div>
+    <div class="results" id="results"></div>
+    <div class="live-log" id="live-log"></div>
+    <div class="errors hidden" id="errors-section">
+      <details>
+        <summary id="errors-summary"></summary>
+        <pre id="errors-list"></pre>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentMode = 'single';
+let currentPayload = 'manual';
+let currentJobId = null;
+let eventSource = null;
+let requestCount = 0;
+
+// Payload tabs
+function setPayloadTab(tab, el) {
+  currentPayload = tab;
+  el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('payload-manual').classList.toggle('hidden', tab !== 'manual');
+  document.getElementById('payload-template').classList.toggle('hidden', tab !== 'template');
+  document.getElementById('payload-sized').classList.toggle('hidden', tab !== 'sized');
+}
+
+// Mode tabs
+function setMode(mode, el) {
+  currentMode = mode;
+  el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('mode-count').classList.toggle('hidden', mode !== 'count');
+  document.getElementById('mode-timed').classList.toggle('hidden', mode !== 'timed');
+}
+
+// Headers
+function addHeader() {
+  const list = document.getElementById('headers-list');
+  const row = document.createElement('div');
+  row.className = 'header-row';
+  row.innerHTML = `
+    <input type="text" placeholder="Key" class="hdr-key">
+    <input type="text" placeholder="Value" class="hdr-val">
+    <button class="btn-sm" onclick="this.parentElement.remove()">x</button>
+  `;
+  list.appendChild(row);
+}
+
+function getHeaders() {
+  const headers = {};
+  document.querySelectorAll('.header-row').forEach(row => {
+    const key = row.querySelector('.hdr-key').value.trim();
+    const val = row.querySelector('.hdr-val').value.trim();
+    if (key) headers[key] = val;
+  });
+  return headers;
+}
+
+// Templates
+async function loadTemplates() {
+  try {
+    const resp = await fetch('/api/templates');
+    const names = await resp.json();
+    const select = document.getElementById('template');
+    names.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      select.appendChild(opt);
+    });
+  } catch(e) { console.error('Failed to load templates', e); }
+}
+
+async function loadTemplate() {
+  const name = document.getElementById('template').value;
+  const preview = document.getElementById('template-preview');
+  if (!name) { preview.value = ''; return; }
+  try {
+    const resp = await fetch(`/api/templates/${name}`);
+    const body = await resp.text();
+    try { preview.value = JSON.stringify(JSON.parse(body), null, 2); }
+    catch { preview.value = body; }
+  } catch(e) { preview.value = 'Error loading template'; }
+}
+
+// Send
+async function startSend() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) { alert('URL is required'); return; }
+
+  const payload = {};
+  payload.url = url;
+  payload.method = document.getElementById('method').value;
+  payload.content_type = document.getElementById('content-type').value;
+  payload.headers = getHeaders();
+  payload.mode = currentMode;
+
+  if (currentPayload === 'manual') {
+    const body = document.getElementById('body').value;
+    if (body) payload.body = body;
+  } else if (currentPayload === 'template') {
+    const tpl = document.getElementById('template').value;
+    if (tpl) payload.template = tpl;
+  } else if (currentPayload === 'sized') {
+    const size = document.getElementById('size').value.trim();
+    if (size) payload.size = size;
+  }
+
+  if (currentMode === 'count') {
+    payload.count = parseInt(document.getElementById('count').value) || 100;
+    payload.concurrency = parseInt(document.getElementById('concurrency-count').value) || 1;
+    const rps = parseFloat(document.getElementById('rps-count').value);
+    if (rps > 0) payload.rps = rps;
+  } else if (currentMode === 'timed') {
+    payload.duration = parseFloat(document.getElementById('duration').value) || 10;
+    payload.concurrency = parseInt(document.getElementById('concurrency-timed').value) || 1;
+    const rps = parseFloat(document.getElementById('rps-timed').value);
+    if (rps > 0) payload.rps = rps;
+  }
+
+  // Reset UI
+  requestCount = 0;
+  document.getElementById('btn-send').disabled = true;
+  document.getElementById('btn-cancel').disabled = false;
+  const resultsCard = document.getElementById('results-card');
+  resultsCard.classList.remove('hidden');
+  document.getElementById('progress-text').textContent = 'Starting...';
+  document.getElementById('progress-bar').style.width = '0%';
+  document.getElementById('progress-wrap').classList.remove('hidden');
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('live-log').innerHTML = '';
+  document.getElementById('errors-section').classList.add('hidden');
+
+  try {
+    const resp = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      showError(err);
+      resetButtons();
+      return;
+    }
+    const data = await resp.json();
+    currentJobId = data.job_id;
+    connectSSE(currentJobId);
+  } catch(e) {
+    showError(e.message);
+    resetButtons();
+  }
+}
+
+function connectSSE(jobId) {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource(`/api/jobs/${jobId}/events`);
+
+  eventSource.addEventListener('progress', (e) => {
+    const data = JSON.parse(e.data);
+    const pct = data.total ? Math.round((data.completed / data.total) * 100) : 0;
+    document.getElementById('progress-bar').style.width = (data.total ? pct : 50) + '%';
+    const text = data.total
+      ? `${data.completed} / ${data.total} (${pct}%)`
+      : `${data.completed} sent`;
+    document.getElementById('progress-text').textContent = text;
+  });
+
+  eventSource.addEventListener('request_done', (e) => {
+    const data = JSON.parse(e.data);
+    requestCount++;
+    const log = document.getElementById('live-log');
+    const cls = data.success ? 'ok' : 'fail';
+    if (requestCount <= 200) {
+      log.innerHTML += `<div class="${cls}">#${requestCount} → ${data.status} (${data.latency_ms.toFixed(0)}ms)</div>`;
+      log.scrollTop = log.scrollHeight;
+    }
+  });
+
+  eventSource.addEventListener('request_failed', (e) => {
+    const data = JSON.parse(e.data);
+    requestCount++;
+    const log = document.getElementById('live-log');
+    if (requestCount <= 200) {
+      log.innerHTML += `<div class="fail">#${requestCount} → ERROR: ${data.error} (${data.latency_ms.toFixed(0)}ms)</div>`;
+      log.scrollTop = log.scrollHeight;
+    }
+  });
+
+  eventSource.addEventListener('finished', (e) => {
+    const data = JSON.parse(e.data);
+    const s = data.summary;
+    document.getElementById('progress-bar').style.width = '100%';
+    document.getElementById('progress-text').textContent = 'Complete';
+
+    document.getElementById('results').innerHTML = `
+      <table>
+        <tr><td>Total</td><td>${s.total} requests</td></tr>
+        <tr><td>Success</td><td class="val-success">${s.success} (2xx)</td></tr>
+        <tr><td>Failed</td><td class="${s.failed > 0 ? 'val-fail' : 'val-success'}">${s.failed}</td></tr>
+        <tr><td>Duration</td><td>${s.duration_secs.toFixed(1)}s</td></tr>
+        ${s.total > 1 ? `<tr><td>Throughput</td><td>${s.throughput.toFixed(1)} req/s</td></tr>` : ''}
+        <tr><td>Latency</td><td>avg=${s.avg_ms.toFixed(0)}ms min=${s.min_ms.toFixed(0)}ms max=${s.max_ms.toFixed(0)}ms</td></tr>
+        ${s.total > 1 ? `<tr><td>Percentiles</td><td>p50=${s.p50_ms.toFixed(0)}ms p95=${s.p95_ms.toFixed(0)}ms p99=${s.p99_ms.toFixed(0)}ms</td></tr>` : ''}
+      </table>
+    `;
+
+    if (s.errors && s.errors.length > 0) {
+      const sec = document.getElementById('errors-section');
+      sec.classList.remove('hidden');
+      document.getElementById('errors-summary').textContent = `Errors (${s.errors.length})`;
+      document.getElementById('errors-list').textContent = s.errors.map((e,i) => `${i+1}. ${e}`).join('\n');
+    }
+
+    resetButtons();
+    if (eventSource) { eventSource.close(); eventSource = null; }
+  });
+
+  eventSource.onerror = () => {
+    // SSE closed by server after job completes
+    if (eventSource) { eventSource.close(); eventSource = null; }
+    resetButtons();
+  };
+}
+
+async function cancelJob() {
+  if (!currentJobId) return;
+  document.getElementById('btn-cancel').disabled = true;
+  try {
+    await fetch(`/api/jobs/${currentJobId}/cancel`, { method: 'POST' });
+  } catch(e) { console.error('Cancel failed', e); }
+}
+
+function resetButtons() {
+  document.getElementById('btn-send').disabled = false;
+  document.getElementById('btn-cancel').disabled = true;
+}
+
+function showError(msg) {
+  document.getElementById('results-card').classList.remove('hidden');
+  document.getElementById('progress-text').textContent = '';
+  document.getElementById('progress-wrap').classList.add('hidden');
+  document.getElementById('results').innerHTML = `<div style="color:var(--red)">${msg}</div>`;
+}
+
+// Init
+loadTemplates();
+</script>
+</body>
+</html>
