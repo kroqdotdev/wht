@@ -2,6 +2,9 @@
 name = "wht"
 version = "0.1.0"
 edition = "2024"
+description = "Webhook Tester — CLI + Web GUI for sending HTTP requests with flexible rate, volume, and payload control"
+license = "MIT"
+repository = "https://github.com/kroqdotdev/wht"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
